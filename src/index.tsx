@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { addElementAtPoint, getDefaultPageDimensions } from "@canva/design";
 
@@ -42,7 +42,7 @@ async function addFrameFromPaths(
 async function addFramePreset(preset: Preset) {
   const square = ["M 0 0 H 240 V 240 H 0 Z"];
   const circle = ["M 120 0 C 186.274 0 240 53.726 240 120 C 240 186.274 186.274 240 120 240 C 53.726 240 0 186.274 0 120 C 0 53.726 53.726 0 120 0 Z"];
-  const rounded = ["M 40 0 H 200 C 222.091 0 240 17.909 240 40 V 200 C 240 222.091 222.091 240 200 240 H 40 C 17.909 240 0 222.091 0 200 V 40 C 0 17.909 17.909 0 40 0 Z"];
+  const rounded = ["M 40 0 H 200 C 222.091 0 240 17.909 240 40 V 200 C 222.091 222.091 240 200 240 H 40 C 17.909 240 0 222.091 0 200 V 40 C 0 17.909 17.909 0 40 0 Z"];
   const heart = ["M 120 220 C 120 220 20 160 20 88 C 20 48 48 20 86 20 C 104 20 114 28 120 36 C 126 28 136 20 154 20 C 192 20 220 48 220 88 C 220 160 120 220 120 220 Z"];
 
   const paths = preset === "circle" ? circle : preset === "rounded" ? rounded : preset === "heart" ? heart : square;
@@ -59,19 +59,146 @@ async function addFramePreset(preset: Preset) {
   });
 }
 
+// Spinner component
+function Spinner() {
+  return (
+    <div style={{
+      width: 16,
+      height: 16,
+      border: "2px solid rgba(255,255,255,0.3)",
+      borderTop: "2px solid white",
+      borderRadius: "50%",
+      animation: "spin 0.6s linear infinite",
+      display: "inline-block",
+      marginRight: 6,
+    }} />
+  );
+}
+
+// Confetti component
+function Confetti() {
+  return (
+    <div style={{ 
+      position: "fixed", 
+      top: 0, 
+      left: 0, 
+      width: "100%", 
+      height: "100%", 
+      pointerEvents: "none",
+      zIndex: 9999,
+    }}>
+      {[...Array(30)].map((_, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            width: 8,
+            height: 8,
+            background: ["#667eea", "#764ba2", "#f093fb", "#4facfe"][i % 4],
+            left: `${Math.random() * 100}%`,
+            top: "-10px",
+            borderRadius: "50%",
+            animation: `fall ${1 + Math.random() * 2}s linear`,
+            animationDelay: `${Math.random() * 0.5}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const [status, setStatus] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
+  const [isConverting, setIsConverting] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(true);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard shortcuts (Chunk 2)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + V: Paste from clipboard
+      if ((e.metaKey || e.ctrlKey) && e.key === "v") {
+        navigator.clipboard.read().then((items) => {
+          for (const item of items) {
+            const imageType = item.types.find((type) => type.startsWith("image/png"));
+            if (imageType) {
+              item.getType(imageType).then((blob) => {
+                const file = new File([blob], "pasted-image.png", { type: "image/png" });
+                onFileSelect(file);
+              });
+            }
+          }
+        }).catch(() => {
+          // Clipboard access denied - silent fail
+        });
+      }
+
+      // Enter: Convert (if file selected)
+      if (e.key === "Enter" && selectedFile && !isConverting) {
+        onConvertToFrame();
+      }
+
+      // Escape: Cancel/Clear
+      if (e.key === "Escape") {
+        clearSelection();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedFile, isConverting]);
+
+  // Drag & Drop (Chunk 3)
+  useEffect(() => {
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+    };
+
+    const handleDragLeave = (e: DragEvent) => {
+      if (e.target === dropZoneRef.current) {
+        setIsDragging(false);
+      }
+    };
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+
+      const file = e.dataTransfer?.files[0];
+      if (file && file.type.includes("png")) {
+        onFileSelect(file);
+      } else if (file) {
+        setStatus("❌ Only PNG files allowed");
+      }
+    };
+
+    const dropZone = dropZoneRef.current;
+    if (dropZone) {
+      dropZone.addEventListener("dragover", handleDragOver);
+      dropZone.addEventListener("dragleave", handleDragLeave);
+      dropZone.addEventListener("drop", handleDrop);
+
+      return () => {
+        dropZone.removeEventListener("dragover", handleDragOver);
+        dropZone.removeEventListener("dragleave", handleDragLeave);
+        dropZone.removeEventListener("drop", handleDrop);
+      };
+    }
+  }, []);
 
   const onAdd = async (preset: Preset) => {
     try {
       setStatus("Adding frame…");
       await addFramePreset(preset);
-      setStatus("Done ✅");
+      setStatus("✅ Frame added!");
       setTimeout(() => setStatus(""), 2000);
     } catch (e: any) {
-      setStatus(`Error: ${e?.message || "Something went wrong"}`);
+      setStatus(`❌ ${e?.message || "Failed"}`);
     }
   };
 
@@ -80,11 +207,24 @@ function App() {
       clearSelection();
       return;
     }
+
+    // File size validation (5MB max)
+    if (file.size > 5 * 1024 * 1024) {
+      setStatus("❌ File too large! Max 5MB");
+      return;
+    }
+
+    // File type validation
+    if (!file.type.includes("png")) {
+      setStatus("❌ Only PNG files allowed");
+      return;
+    }
     
     setSelectedFile(file);
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
     setStatus("");
+    setShowTutorial(false);
   };
 
   const clearSelection = () => {
@@ -92,13 +232,16 @@ function App() {
     setSelectedFile(null);
     setPreviewUrl("");
     setStatus("");
+    setIsConverting(false);
   };
 
   const onConvertToFrame = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || isConverting) return;
     
     try {
+      setIsConverting(true);
       setStatus("Uploading PNG…");
+      
       const form = new FormData();
       form.append("file", selectedFile);
       
@@ -129,19 +272,81 @@ function App() {
       setStatus("Creating frame…");
       await addFrameFromPaths(paths, data.viewBox);
       
-      setStatus("✅ Done! Drag & drop image into frame.");
+      // Success with confetti (Chunk 4)
+      setStatus("🎉 Success! Frame added!");
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 2000);
+      
       setTimeout(() => {
         setStatus("");
         clearSelection();
       }, 2500);
     } catch (e: any) {
       setStatus(`❌ ${e?.message || "Failed"}`);
+    } finally {
+      setIsConverting(false);
     }
   };
 
   return (
     <div style={{ padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto" }}>
+      {/* Animations */}
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        @keyframes fall {
+          0% { 
+            transform: translateY(0) rotate(0deg);
+            opacity: 1;
+          }
+          100% { 
+            transform: translateY(400px) rotate(360deg);
+            opacity: 0;
+          }
+        }
+      `}</style>
+
+      {/* Confetti */}
+      {showConfetti && <Confetti />}
+
       <h3 style={{ margin: "0 0 12px 0", fontSize: 18, fontWeight: 700 }}>Frame Maker</h3>
+
+      {/* Tutorial tooltip */}
+      {showTutorial && !selectedFile && (
+        <div style={{
+          padding: "10px 12px",
+          background: "#EEF2FF",
+          border: "1px solid #C7D2FE",
+          borderRadius: 8,
+          fontSize: 12,
+          marginBottom: 12,
+          color: "#4338CA",
+          position: "relative",
+        }}>
+          💡 <strong>Tip:</strong> Upload PNG, paste (Cmd+V), or drag & drop!
+          <button
+            onClick={() => setShowTutorial(false)}
+            style={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 14,
+              color: "#6366F1",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Preset Frames */}
       <div style={{ marginBottom: 16 }}>
@@ -157,8 +362,17 @@ function App() {
       {/* Divider */}
       <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "16px 0" }} />
 
-      {/* PNG to Frame */}
-      <div>
+      {/* PNG to Frame with Drag & Drop Zone */}
+      <div
+        ref={dropZoneRef}
+        style={{
+          border: isDragging ? "2px dashed #667eea" : "none",
+          borderRadius: 12,
+          padding: isDragging ? 12 : 0,
+          background: isDragging ? "rgba(102, 126, 234, 0.05)" : "transparent",
+          transition: "all 0.2s",
+        }}
+      >
         <div style={{ fontSize: 12, marginBottom: 8, opacity: 0.7, fontWeight: 600 }}>
           Custom PNG → Frame
         </div>
@@ -169,10 +383,16 @@ function App() {
           onChange={(e) => onFileSelect(e.target.files?.[0] || null)}
           style={{ display: "none" }}
           id="file-input"
+          disabled={isConverting}
         />
         
-        <label htmlFor="file-input" style={uploadBtn}>
-          {selectedFile ? `✓ ${selectedFile.name}` : "Choose PNG"}
+        <label htmlFor="file-input" style={{
+          ...uploadBtn,
+          opacity: isConverting ? 0.5 : 1,
+          cursor: isConverting ? "not-allowed" : "pointer",
+          borderColor: isDragging ? "#667eea" : "#CCC",
+        }}>
+          {isDragging ? "📂 Drop PNG here" : selectedFile ? `✓ ${selectedFile.name}` : "Choose or Drop PNG"}
         </label>
 
         {/* Preview with Remove Button */}
@@ -188,11 +408,13 @@ function App() {
                   objectFit: "contain",
                   borderRadius: 8, 
                   border: "2px solid #E5E5E5",
-                  background: "repeating-conic-gradient(#E5E5E5 0% 25%, white 0% 50%) 50% / 20px 20px"
+                  background: "repeating-conic-gradient(#E5E5E5 0% 25%, white 0% 50%) 50% / 20px 20px",
+                  opacity: isConverting ? 0.6 : 1,
                 }} 
               />
               <button
                 onClick={clearSelection}
+                disabled={isConverting}
                 style={{
                   position: "absolute",
                   top: 8,
@@ -204,30 +426,39 @@ function App() {
                   border: "2px solid white",
                   color: "white",
                   fontSize: 16,
-                  cursor: "pointer",
+                  cursor: isConverting ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   padding: 0,
                   lineHeight: 1,
+                  opacity: isConverting ? 0.5 : 1,
                 }}
-                title="Remove image"
+                title="Remove image (Esc)"
               >
                 ✕
               </button>
             </div>
             <button 
-              style={convertBtn} 
+              style={{
+                ...convertBtn,
+                opacity: isConverting ? 0.7 : 1,
+                cursor: isConverting ? "not-allowed" : "pointer",
+              }}
               onClick={onConvertToFrame}
-              disabled={!selectedFile}
+              disabled={!selectedFile || isConverting}
             >
-              Convert to Frame
+              {isConverting ? (
+                <><Spinner /> Converting...</>
+              ) : (
+                "Convert to Frame (Enter)"
+              )}
             </button>
           </div>
         )}
 
         <div style={{ fontSize: 11, marginTop: 8, opacity: 0.6 }}>
-          Best with black/white silhouette or clean-background images
+          Max 5MB • Cmd+V to paste • Enter to convert • Esc to cancel
         </div>
       </div>
 
@@ -236,11 +467,12 @@ function App() {
         <div style={{ 
           marginTop: 14, 
           padding: "8px 12px", 
-          background: status.includes("Error") || status.includes("❌") ? "#FEE" : "#E8F5E9",
-          color: status.includes("Error") || status.includes("❌") ? "#C33" : "#2E7D32",
+          background: status.includes("❌") ? "#FEE" : status.includes("🎉") ? "#F0F9FF" : "#E8F5E9",
+          color: status.includes("❌") ? "#C33" : status.includes("🎉") ? "#0369A1" : "#2E7D32",
           borderRadius: 6,
           fontSize: 12,
-          fontWeight: 600
+          fontWeight: 600,
+          animation: isConverting ? "pulse 1.5s ease-in-out infinite" : "none",
         }}>
           {status}
         </div>
@@ -287,6 +519,9 @@ const convertBtn: React.CSSProperties = {
   fontSize: 14,
   fontWeight: 700,
   transition: "all 0.2s",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
 };
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -463,8 +463,8 @@ function App() {
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         @keyframes fall { 0% { transform: translateY(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(400px) rotate(360deg); opacity: 0; } }
         @keyframes slideIn { 0% { transform: translateY(10px); opacity: 0; } 100% { transform: translateY(0); opacity: 1; } }
-        .tab-btn { padding: 8px 0; font-size: 11px; font-weight: 600; border: none; cursor: pointer; background: transparent; color: rgba(255,255,255,0.6); border-bottom: 2px solid transparent; transition: all 0.2s; flex: 1; text-align: center; }
-        .tab-btn.active { color: white; border-bottom-color: white; }
+        .tab-btn { padding: 10px 4px; font-size: 12px; font-weight: 700; border: none; cursor: pointer; background: transparent; color: rgba(255,255,255,0.5); border-bottom: 3px solid transparent; transition: all 0.2s; flex: 1; text-align: center; letter-spacing: 0.3px; }
+        .tab-btn.active { color: white; border-bottom-color: white; background: rgba(255,255,255,0.15); border-radius: 8px 8px 0 0; }
         .frame-grid-btn { padding: 10px; background: #7D2AE8; color: white; border-radius: 8px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.15s; text-align: center; }
         .frame-grid-btn:hover { background: #6B21D8; transform: scale(1.02); }
         .frame-grid-btn:active { transform: scale(0.98); }

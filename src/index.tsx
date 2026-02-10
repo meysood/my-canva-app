@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { addElementAtPoint, getDefaultPageDimensions } from "@canva/design";
 
-const BACKEND_URL = "https://postconvulsive-aubrey-floriferously.ngrok-free.dev";
+const BACKEND_URL = "https://frame-maker-backend-production.up.railway.app";
 
 type Preset = "square" | "circle" | "rounded" | "heart" | "star" | "hexagon" | "diamond" | "arch" | "cross" | "oval";
 type Tab = "quick" | "custom" | "batch" | "library" | "effects";

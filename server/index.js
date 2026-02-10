@@ -26,7 +26,6 @@ function extractSubpaths(d) {
     if (c === "M" || c === "m") idx.push(i);
   }
   if (idx.length <= 1) return [d.trim()];
-
   const parts = [];
   for (let i = 0; i < idx.length; i++) {
     const start = idx[i];
@@ -50,216 +49,127 @@ function extractViewBox(svg) {
   };
 }
 
+function traceSvg(buffer, opts = {}) {
+  return new Promise((resolve, reject) => {
+    trace(
+      buffer,
+      {
+        turdSize: opts.turdSize || 20,
+        optCurve: true,
+        alphaMax: 1,
+        threshold: opts.threshold || 160,
+        color: "black",
+        background: "transparent",
+        ...opts,
+      },
+      (err, svg) => {
+        if (err) return reject(err);
+        resolve(svg);
+      }
+    );
+  });
+}
+
+function extractPaths(svg, limit = 200) {
+  const viewBox = extractViewBox(svg);
+  const paths = [];
+  const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
+  for (const m of matches) {
+    const sub = extractSubpaths(m[1]);
+    for (const s of sub) {
+      paths.push(s);
+      if (paths.length >= limit) break;
+    }
+    if (paths.length >= limit) break;
+  }
+  return { paths, viewBox };
+}
+
+async function processImage(buffer, opts = {}) {
+  const metadata = await sharp(buffer).metadata();
+  const maxDim = Math.max(metadata.width || 800, metadata.height || 800);
+
+  const pre = await sharp(buffer)
+    .ensureAlpha()
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
+    .grayscale()
+    .normalise()
+    .threshold(opts.threshold || 160)
+    .png()
+    .toBuffer();
+
+  const svg = await traceSvg(pre, opts);
+  return extractPaths(svg);
+}
+
 // Main vectorize endpoint
 app.post("/vectorize", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-
-    const metadata = await sharp(req.file.buffer).metadata();
-    const maxDim = Math.max(metadata.width || 800, metadata.height || 800);
-
-    const pre = await sharp(req.file.buffer)
-      .ensureAlpha()
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
-      .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
-      .grayscale()
-      .normalise()
-      .threshold(160)
-      .png()
-      .toBuffer();
-
-    trace(
-      pre,
-      {
-        turdSize: 20,
-        optCurve: true,
-        alphaMax: 1,
-        threshold: 160,
-        color: "black",
-        background: "transparent",
-      },
-      (err, svg) => {
-        if (err) return res.status(500).json({ error: String(err) });
-
-        const viewBox = extractViewBox(svg);
-        const paths = [];
-        const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
-        for (const m of matches) {
-          const sub = extractSubpaths(m[1]);
-          for (const s of sub) {
-            paths.push(s);
-            if (paths.length >= 200) break;
-          }
-          if (paths.length >= 200) break;
-        }
-
-        if (!paths.length)
-          return res.status(500).json({ error: "No path found" });
-
-        res.json({ paths, viewBox });
-      }
-    );
+    const result = await processImage(req.file.buffer);
+    if (!result.paths.length) return res.status(500).json({ error: "No path found" });
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 });
 
-// Batch vectorize endpoint
+// Batch vectorize
 app.post("/vectorize-batch", upload.array("files", 20), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0)
       return res.status(400).json({ error: "No files uploaded" });
 
     const results = [];
-
     for (const file of req.files) {
       try {
-        const metadata = await sharp(file.buffer).metadata();
-        const maxDim = Math.max(metadata.width || 800, metadata.height || 800);
-
-        const pre = await sharp(file.buffer)
-          .ensureAlpha()
-          .flatten({ background: { r: 255, g: 255, b: 255 } })
-          .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
-          .grayscale()
-          .normalise()
-          .threshold(160)
-          .png()
-          .toBuffer();
-
-        const result = await new Promise((resolve, reject) => {
-          trace(
-            pre,
-            {
-              turdSize: 20,
-              optCurve: true,
-              alphaMax: 1,
-              threshold: 160,
-              color: "black",
-              background: "transparent",
-            },
-            (err, svg) => {
-              if (err) return reject(err);
-
-              const viewBox = extractViewBox(svg);
-              const paths = [];
-              const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
-              for (const m of matches) {
-                const sub = extractSubpaths(m[1]);
-                for (const s of sub) {
-                  paths.push(s);
-                  if (paths.length >= 200) break;
-                }
-                if (paths.length >= 200) break;
-              }
-
-              resolve({ name: file.originalname, paths, viewBox });
-            }
-          );
-        });
-
-        results.push(result);
+        const result = await processImage(file.buffer);
+        results.push({ name: file.originalname, ...result });
       } catch (e) {
         results.push({ name: file.originalname, error: String(e) });
       }
     }
-
     res.json({ results });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 });
 
-// Smart crop - auto-detect subject bounds
+// Smart crop
 app.post("/smart-crop", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    const metadata = await sharp(req.file.buffer).metadata();
-    
-    // Get trimmed bounds (auto-detect subject)
     const trimmed = await sharp(req.file.buffer)
       .trim()
       .toBuffer({ resolveWithObject: true });
 
-    const trimInfo = trimmed.info;
-    
-    // Calculate crop bounds
-    const cropInfo = {
-      originalWidth: metadata.width,
-      originalHeight: metadata.height,
-      trimmedWidth: trimInfo.width,
-      trimmedHeight: trimInfo.height,
-      offsetX: trimInfo.trimOffsetLeft || 0,
-      offsetY: trimInfo.trimOffsetTop || 0,
-    };
+    const result = await processImage(trimmed.data);
+    if (!result.paths.length) return res.status(500).json({ error: "No path found" });
 
-    // Now vectorize the trimmed image
-    const pre = await sharp(trimmed.data)
-      .ensureAlpha()
-      .flatten({ background: { r: 255, g: 255, b: 255 } })
-      .grayscale()
-      .normalise()
-      .threshold(160)
-      .png()
-      .toBuffer();
-
-    trace(
-      pre,
-      {
-        turdSize: 20,
-        optCurve: true,
-        alphaMax: 1,
-        threshold: 160,
-        color: "black",
-        background: "transparent",
-      },
-      (err, svg) => {
-        if (err) return res.status(500).json({ error: String(err) });
-
-        const viewBox = extractViewBox(svg);
-        const paths = [];
-        const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
-        for (const m of matches) {
-          const sub = extractSubpaths(m[1]);
-          for (const s of sub) {
-            paths.push(s);
-            if (paths.length >= 200) break;
-          }
-          if (paths.length >= 200) break;
-        }
-
-        if (!paths.length)
-          return res.status(500).json({ error: "No path found" });
-
-        res.json({ paths, viewBox, cropInfo });
-      }
-    );
+    res.json({ ...result, cropInfo: trimmed.info });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 });
 
-// Background removal (basic - using alpha channel)
+// Remove BG
 app.post("/remove-bg", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Extract alpha channel and use it to create clean silhouette
     const metadata = await sharp(req.file.buffer).metadata();
-    
     let processed;
-    
+
     if (metadata.hasAlpha) {
-      // Has alpha - use it to extract subject
       processed = await sharp(req.file.buffer)
         .ensureAlpha()
-        .extractChannel(3) // Alpha channel
+        .extractChannel(3)
         .threshold(128)
         .png()
         .toBuffer();
     } else {
-      // No alpha - use edge detection approach
       processed = await sharp(req.file.buffer)
         .grayscale()
         .normalise()
@@ -269,38 +179,50 @@ app.post("/remove-bg", upload.single("file"), async (req, res) => {
         .toBuffer();
     }
 
-    // Vectorize the result
-    trace(
-      processed,
-      {
-        turdSize: 15,
-        optCurve: true,
-        alphaMax: 1,
-        threshold: 128,
-        color: "black",
-        background: "transparent",
-      },
-      (err, svg) => {
-        if (err) return res.status(500).json({ error: String(err) });
+    const svg = await traceSvg(processed, { threshold: 128, turdSize: 15 });
+    const result = extractPaths(svg);
+    if (!result.paths.length) return res.status(500).json({ error: "No path found" });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
 
-        const viewBox = extractViewBox(svg);
-        const paths = [];
-        const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
-        for (const m of matches) {
-          const sub = extractSubpaths(m[1]);
-          for (const s of sub) {
-            paths.push(s);
-            if (paths.length >= 200) break;
-          }
-          if (paths.length >= 200) break;
-        }
+// TEXT TO FRAME — render text as image then vectorize
+app.post("/text-to-frame", async (req, res) => {
+  try {
+    const { text, fontSize, fontWeight } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "No text provided" });
 
-        if (!paths.length)
-          return res.status(500).json({ error: "No path found" });
+    const size = fontSize || 200;
+    const weight = fontWeight || "bold";
+    const cleanText = text.trim().substring(0, 100);
 
-        res.json({ paths, viewBox });
-      }
-    );
+    // Create SVG with text
+    const textSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600">
+      <rect width="1200" height="600" fill="white"/>
+      <text x="600" y="350" text-anchor="middle" dominant-baseline="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="${size}"
+        font-weight="${weight}"
+        fill="black">${cleanText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>
+    </svg>`;
+
+    // Render SVG to PNG
+    const pngBuffer = await sharp(Buffer.from(textSvg))
+      .png()
+      .toBuffer();
+
+    // Trim whitespace
+    const trimmed = await sharp(pngBuffer)
+      .trim()
+      .toBuffer();
+
+    // Process to get paths
+    const result = await processImage(trimmed, { threshold: 128, turdSize: 5 });
+    if (!result.paths.length) return res.status(500).json({ error: "Could not convert text to paths" });
+
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

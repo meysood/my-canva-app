@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { addElementAtPoint, getDefaultPageDimensions, selection, requestExport } from "@canva/design";
+import { addElementAtPoint, getDefaultPageDimensions, selection } from "@canva/design";
 
 const BACKEND_URL = "https://frame-maker-backend-production.up.railway.app";
 
 type Preset = "square" | "circle" | "rounded" | "heart" | "star" | "hexagon" | "diamond" | "arch" | "cross" | "oval";
 type Tab = "quick" | "custom" | "batch" | "library" | "effects" | "selection";
 type FrameEffect = "none" | "shadow" | "glow" | "outline" | "double";
-type FontStyle = "arial" | "serif" | "mono" | "impact" | "cursive" | "rounded" | "thin" | "light" | "black" | "condensed";
 
 const FRAME_PATHS: Record<string, { paths: string[]; viewBox: { width: number; height: number; left: number; top: number } }> = {
   square: { paths: ["M 0 0 H 240 V 240 H 0 Z"], viewBox: { width: 240, height: 240, left: 0, top: 0 } },
@@ -32,17 +31,17 @@ const FRAME_PACKS: Record<string, { name: string; emoji: string; frames: Preset[
 
 const COLOR_PRESETS = ["#7D2AE8","#667eea","#764ba2","#f093fb","#4facfe","#43e97b","#fa709a","#fee140","#FF6B6B","#333333","#FFFFFF","#000000","#FF9800","#2196F3","#4CAF50"];
 
-const FONT_OPTIONS: { id: FontStyle; name: string; preview: string }[] = [
-  { id: "arial", name: "Sans Bold", preview: "Aa" },
-  { id: "serif", name: "Serif Bold", preview: "Aa" },
-  { id: "mono", name: "Mono Bold", preview: "Aa" },
-  { id: "impact", name: "Impact", preview: "Aa" },
-  { id: "cursive", name: "Casual", preview: "Aa" },
-  { id: "rounded", name: "Rounded", preview: "Aa" },
-  { id: "thin", name: "Thin", preview: "Aa" },
-  { id: "light", name: "Light", preview: "Aa" },
-  { id: "black", name: "Black", preview: "Aa" },
-  { id: "condensed", name: "Narrow", preview: "Aa" },
+const FONT_OPTIONS = [
+  { id: "sans-bold", name: "Sans Bold" },
+  { id: "serif-bold", name: "Serif Bold" },
+  { id: "mono-bold", name: "Mono Bold" },
+  { id: "sans-black", name: "Sans Black" },
+  { id: "sans-thin", name: "Sans Thin" },
+  { id: "sans-light", name: "Sans Light" },
+  { id: "serif-normal", name: "Serif Regular" },
+  { id: "mono-normal", name: "Mono Regular" },
+  { id: "noto-bold", name: "Noto Bold" },
+  { id: "noto-black", name: "Noto Black" },
 ];
 
 async function getPageFitBox() {
@@ -102,48 +101,22 @@ function App() {
   // Selection tab
   const [selectedText, setSelectedText] = useState("");
   const [hasTextSelection, setHasTextSelection] = useState(false);
-  const [hasImageSelection, setHasImageSelection] = useState(false);
   const [manualText, setManualText] = useState("");
   const [textFontSize, setTextFontSize] = useState(250);
-  const [textFontStyle, setTextFontStyle] = useState<FontStyle>("impact");
+  const [textFontStyle, setTextFontStyle] = useState("sans-bold");
   const [selectionMode, setSelectionMode] = useState<"text" | "shape">("text");
-  const [selectedImageRef, setSelectedImageRef] = useState<string>("");
+  const [textMode, setTextMode] = useState<"combined" | "individual">("combined");
+  const [shapeFile, setShapeFile] = useState<File | null>(null);
+  const [shapePreview, setShapePreview] = useState("");
 
-  // Watch text selection
   useEffect(() => {
     try {
       const dispose = selection.registerOnChange({
         scope: "plaintext",
         onChange: async (event) => {
           if (event.count > 0) {
-            try {
-              const draft = await event.read();
-              const text = draft.contents[0]?.text || "";
-              setSelectedText(text);
-              setHasTextSelection(true);
-              setManualText(text);
-            } catch { setHasTextSelection(false); setSelectedText(""); }
+            try { const draft = await event.read(); const t = draft.contents[0]?.text || ""; setSelectedText(t); setHasTextSelection(true); setManualText(t); } catch { setHasTextSelection(false); }
           } else { setHasTextSelection(false); setSelectedText(""); }
-        },
-      });
-      return () => { if (dispose) dispose(); };
-    } catch {}
-  }, []);
-
-  // Watch image selection (for shapes exported as images)
-  useEffect(() => {
-    try {
-      const dispose = selection.registerOnChange({
-        scope: "image",
-        onChange: async (event) => {
-          if (event.count > 0) {
-            try {
-              const draft = await event.read();
-              const ref = (draft.contents[0] as any)?.ref || "";
-              setHasImageSelection(true);
-              setSelectedImageRef(ref);
-            } catch { setHasImageSelection(false); }
-          } else { setHasImageSelection(false); setSelectedImageRef(""); }
         },
       });
       return () => { if (dispose) dispose(); };
@@ -152,9 +125,7 @@ function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "v") {
-        navigator.clipboard.read().then((items) => { for (const item of items) { const t = item.types.find((t) => t.startsWith("image/png")); if (t) item.getType(t).then((blob) => { onFileSelect(new File([blob], "pasted.png", { type: "image/png" })); setActiveTab("custom"); }); } }).catch(() => {});
-      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "v") { navigator.clipboard.read().then((items) => { for (const item of items) { const t = item.types.find((t) => t.startsWith("image/png")); if (t) item.getType(t).then((blob) => { onFileSelect(new File([blob], "pasted.png", { type: "image/png" })); setActiveTab("custom"); }); } }).catch(() => {}); }
       if (e.key === "Enter" && selectedFile && !isConverting) onConvertToFrame();
       if (e.key === "Escape") clearFileSelection();
     };
@@ -178,62 +149,82 @@ function App() {
 
   const onConvertToFrame = async () => {
     if (!selectedFile || isConverting) return;
-    try { setIsConverting(true); setStatus("Uploading…"); const form = new FormData(); form.append("file", selectedFile); const ep = useSmartCrop ? "/smart-crop" : useRemoveBg ? "/remove-bg" : "/vectorize"; const resp = await fetch(`${BACKEND_URL}${ep}`, { method: "POST", body: form }); const data = await resp.json(); if (!resp.ok) throw new Error(data?.error); const paths = data.paths || []; if (!paths.length) throw new Error("No paths"); setStatus("Creating…"); await addFrameFromPaths(paths, data.viewBox); saveFrame({ name: selectedFile.name.replace(".png", ""), paths, viewBox: data.viewBox }); setSavedFrames(getSavedFrames()); showSuccess("🎉 Frame created!"); setTimeout(clearFileSelection, 2500); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
+    try { setIsConverting(true); setStatus("Uploading…"); const form = new FormData(); form.append("file", selectedFile); const ep = useSmartCrop ? "/smart-crop" : useRemoveBg ? "/remove-bg" : "/vectorize"; const data = await (await fetch(`${BACKEND_URL}${ep}`, { method: "POST", body: form })).json(); if (data.error) throw new Error(data.error); if (!data.paths?.length) throw new Error("No paths"); await addFrameFromPaths(data.paths, data.viewBox); saveFrame({ name: selectedFile.name.replace(".png", ""), paths: data.paths, viewBox: data.viewBox }); setSavedFrames(getSavedFrames()); showSuccess("🎉 Frame created!"); setTimeout(clearFileSelection, 2500); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
   };
 
   const onBatchConvert = async () => {
     if (!batchFiles.length || isConverting) return;
-    try { setIsConverting(true); setBatchProgress(0); const form = new FormData(); batchFiles.forEach((f) => form.append("files", f)); setStatus(`Uploading ${batchFiles.length}…`); const data = await (await fetch(`${BACKEND_URL}/vectorize-batch`, { method: "POST", body: form })).json(); const results = data.results || []; let added = 0; for (let i = 0; i < results.length; i++) { setBatchProgress(Math.round(((i + 1) / results.length) * 100)); setStatus(`Frame ${i + 1}/${results.length}…`); const r = results[i]; if (r.paths?.length) { await addFrameFromPaths(r.paths, r.viewBox); saveFrame({ name: r.name || `batch-${i}`, paths: r.paths, viewBox: r.viewBox }); added++; await delay(300); } } setSavedFrames(getSavedFrames()); showSuccess(`🎉 ${added}/${results.length} created!`); setBatchFiles([]); setBatchProgress(0); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
+    try { setIsConverting(true); setBatchProgress(0); const form = new FormData(); batchFiles.forEach((f) => form.append("files", f)); const data = await (await fetch(`${BACKEND_URL}/vectorize-batch`, { method: "POST", body: form })).json(); const results = data.results || []; let added = 0; for (let i = 0; i < results.length; i++) { setBatchProgress(Math.round(((i + 1) / results.length) * 100)); const r = results[i]; if (r.paths?.length) { await addFrameFromPaths(r.paths, r.viewBox); saveFrame({ name: r.name || `batch-${i}`, paths: r.paths, viewBox: r.viewBox }); added++; await delay(300); } } setSavedFrames(getSavedFrames()); showSuccess(`🎉 ${added} created!`); setBatchFiles([]); setBatchProgress(0); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
   };
 
   const onAddFromLibrary = async (f: SavedFrame) => { try { setStatus("Adding…"); await addFrameFromPaths(f.paths, f.viewBox); showSuccess("✅ Added!"); } catch (e: any) { setStatus(`❌ ${e?.message}`); } };
+  const onAddWithEffect = async () => { try { setIsConverting(true); const f = FRAME_PATHS[selectedFrameForEffect]; await addFrameWithEffect(f.paths, f.viewBox, selectedEffect, selectedColor); showSuccess("✅ Added!"); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); } };
 
-  const onAddWithEffect = async () => {
-    try { setIsConverting(true); setStatus(`Adding…`); const f = FRAME_PATHS[selectedFrameForEffect]; await addFrameWithEffect(f.paths, f.viewBox, selectedEffect, selectedColor); showSuccess(`✅ Added!`); } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
-  };
-
+  // TEXT → FRAME
   const onConvertTextToFrame = async () => {
     const text = manualText.trim();
     if (!text || isConverting) return;
     try {
-      setIsConverting(true); setStatus("🔄 Converting text…");
-      const data = await (await fetch(`${BACKEND_URL}/text-to-frame`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, fontSize: textFontSize, fontStyle: textFontStyle }) })).json();
+      setIsConverting(true);
+      setStatus(textMode === "individual" ? "🔄 Converting each letter…" : "🔄 Converting text…");
+
+      const data = await (await fetch(`${BACKEND_URL}/text-to-frame`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, fontSize: textFontSize, fontStyle: textFontStyle, mode: textMode }),
+      })).json();
+
       if (data.error) throw new Error(data.error);
-      if (!data.paths?.length) throw new Error("No paths");
-      setStatus("Creating frame…"); await addFrameFromPaths(data.paths, data.viewBox);
-      saveFrame({ name: `Text: ${text.substring(0, 20)}`, paths: data.paths, viewBox: data.viewBox }); setSavedFrames(getSavedFrames());
-      showSuccess("🎉 Text frame created!");
-    } catch (e: any) { setStatus(`❌ ${e?.message}`); } finally { setIsConverting(false); }
+
+      if (textMode === "individual" && data.results) {
+        // Individual: each letter = separate frame
+        let added = 0;
+        for (const r of data.results) {
+          if (r.paths?.length) {
+            await addFrameFromPaths(r.paths, r.viewBox);
+            saveFrame({ name: `Letter: ${r.letter}`, paths: r.paths, viewBox: r.viewBox });
+            added++;
+            await delay(400);
+          }
+        }
+        setSavedFrames(getSavedFrames());
+        showSuccess(`🎉 ${added} letter frames created!`);
+      } else {
+        // Combined: all text = one frame
+        if (!data.paths?.length) throw new Error("No paths");
+        await addFrameFromPaths(data.paths, data.viewBox);
+        saveFrame({ name: `Text: ${text.substring(0, 20)}`, paths: data.paths, viewBox: data.viewBox });
+        setSavedFrames(getSavedFrames());
+        showSuccess("🎉 Text frame created!");
+      }
+    } catch (e: any) { setStatus(`❌ ${e?.message}`); }
+    finally { setIsConverting(false); }
   };
 
-  // Shape → Frame via export
+  // SHAPE → FRAME (via PNG upload)
+  const onShapeFileSelect = (file: File | null) => {
+    if (!file) { setShapeFile(null); setShapePreview(""); return; }
+    if (!file.type.includes("png") && !file.type.includes("jpeg") && !file.type.includes("jpg")) { setStatus("❌ PNG or JPG only"); return; }
+    if (file.size > 5242880) { setStatus("❌ Max 5MB"); return; }
+    setShapeFile(file);
+    setShapePreview(URL.createObjectURL(file));
+  };
+
   const onConvertShapeToFrame = async () => {
-    if (isConverting) return;
+    if (!shapeFile || isConverting) return;
     try {
       setIsConverting(true);
-      setStatus("🔄 Exporting design as PNG…");
-
-      const result = await requestExport({ acceptedFileTypes: ["png"] });
-      if (result.status === "aborted") { setStatus("Export cancelled"); setIsConverting(false); return; }
-
-      const blob = result.exportBlobs?.[0];
-      if (!blob?.url) throw new Error("Export failed");
-
-      setStatus("🔄 Downloading export…");
-      const resp = await fetch(blob.url);
-      const buffer = await resp.blob();
-      const file = new File([buffer], "shape-export.png", { type: "image/png" });
-
-      setStatus("🔄 Vectorizing shape…");
-      const form = new FormData(); form.append("file", file);
-      const data = await (await fetch(`${BACKEND_URL}/smart-crop`, { method: "POST", body: form })).json();
+      setStatus("🔄 Converting shape…");
+      const form = new FormData();
+      form.append("file", shapeFile);
+      const data = await (await fetch(`${BACKEND_URL}/shape-to-frame`, { method: "POST", body: form })).json();
       if (data.error) throw new Error(data.error);
       if (!data.paths?.length) throw new Error("No paths found");
-
-      setStatus("Creating frame…");
       await addFrameFromPaths(data.paths, data.viewBox);
-      saveFrame({ name: "Shape Frame", paths: data.paths, viewBox: data.viewBox }); setSavedFrames(getSavedFrames());
+      saveFrame({ name: "Shape Frame", paths: data.paths, viewBox: data.viewBox });
+      setSavedFrames(getSavedFrames());
       showSuccess("🎉 Shape converted to frame!");
+      setShapeFile(null); setShapePreview("");
     } catch (e: any) { setStatus(`❌ ${e?.message}`); }
     finally { setIsConverting(false); }
   };
@@ -261,23 +252,23 @@ function App() {
             <button key={tab} className={`tab-btn ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
               {label}
               {tab === "library" && savedFrames.length > 0 && <span style={{ marginLeft: 3, fontSize: 9, background: "rgba(255,255,255,0.3)", borderRadius: 10, padding: "1px 5px" }}>{savedFrames.length}</span>}
-              {tab === "selection" && (hasTextSelection || hasImageSelection) && <span style={{ marginLeft: 3, fontSize: 9, background: "#43e97b", color: "#000", borderRadius: 10, padding: "1px 5px" }}>✓</span>}
+              {tab === "selection" && hasTextSelection && <span style={{ marginLeft: 3, fontSize: 9, background: "#43e97b", color: "#000", borderRadius: 10, padding: "1px 5px" }}>✓</span>}
             </button>
           ))}
         </div>
       </div>
 
       <div style={{ padding: 16, animation: "slideIn 0.2s ease-out" }}>
-        {showTutorial && activeTab === "quick" && <div style={{ padding: "10px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, marginBottom: 12, color: "#4338CA", position: "relative" }}>💡 <strong>Tip:</strong> Drag & drop PNG anywhere, or Cmd+V!<button onClick={() => setShowTutorial(false)} style={{ position: "absolute", top: 6, right: 8, background: "transparent", border: "none", cursor: "pointer", fontSize: 14, color: "#6366F1" }}>✕</button></div>}
+        {showTutorial && activeTab === "quick" && <div style={{ padding: "10px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, marginBottom: 12, color: "#4338CA", position: "relative" }}>💡 <strong>Tip:</strong> Drag & drop PNG anywhere!<button onClick={() => setShowTutorial(false)} style={{ position: "absolute", top: 6, right: 8, background: "transparent", border: "none", cursor: "pointer", fontSize: 14, color: "#6366F1" }}>✕</button></div>}
 
         {/* QUICK */}
         {activeTab === "quick" && <div>{Object.entries(FRAME_PACKS).map(([k, p]) => <div key={k} style={{ marginBottom: 16 }}><div style={{ fontSize: 12, marginBottom: 8, fontWeight: 600, color: "#555" }}>{p.emoji} {p.name}</div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>{p.frames.map((f, i) => <button key={i} className="frame-grid-btn" onClick={() => onAddPreset(f)}>{f.charAt(0).toUpperCase() + f.slice(1)}</button>)}</div></div>)}<div style={{ marginTop: 8 }}><div style={{ fontSize: 12, marginBottom: 8, fontWeight: 600, color: "#555" }}>🔷 All Shapes</div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>{Object.keys(FRAME_PATHS).map((k) => <button key={k} className="frame-grid-btn" onClick={() => onAddPreset(k as Preset)}>{k.charAt(0).toUpperCase() + k.slice(1)}</button>)}</div></div></div>}
 
         {/* CUSTOM */}
-        {activeTab === "custom" && <div><input type="file" accept="image/png" onChange={(e) => onFileSelect(e.target.files?.[0] || null)} style={{ display: "none" }} id="file-input" disabled={isConverting} /><label htmlFor="file-input" style={{ display: "block", padding: "14px 16px", background: isDragging ? "rgba(102,126,234,0.1)" : "#F5F5F5", color: "#333", borderRadius: 8, border: `2px dashed ${isDragging ? "#667eea" : "#CCC"}`, cursor: isConverting ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, textAlign: "center", opacity: isConverting ? 0.5 : 1 }}>{isDragging ? "📂 Drop" : selectedFile ? `✓ ${selectedFile.name}` : "📁 Choose or Drop PNG"}</label><div style={{ marginTop: 12, display: "flex", gap: 8 }}><label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><input type="checkbox" checked={useSmartCrop} onChange={(e) => setUseSmartCrop(e.target.checked)} /> Smart Crop</label><label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><input type="checkbox" checked={useRemoveBg} onChange={(e) => setUseRemoveBg(e.target.checked)} /> Remove BG</label></div>{previewUrl && <div style={{ marginTop: 12 }}><div style={{ position: "relative", width: "100%" }}><img src={previewUrl} alt="" style={{ width: "100%", maxHeight: 180, objectFit: "contain", borderRadius: 8, border: "2px solid #E5E5E5", background: "repeating-conic-gradient(#E5E5E5 0% 25%, white 0% 50%) 50% / 20px 20px", opacity: isConverting ? 0.6 : 1 }} /><button onClick={clearFileSelection} disabled={isConverting} style={{ position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: "50%", background: "rgba(0,0,0,0.7)", border: "2px solid white", color: "white", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>✕</button></div><button style={{ marginTop: 10, width: "100%", padding: "12px", background: isConverting ? "#999" : "linear-gradient(135deg, #667eea, #764ba2)", color: "white", borderRadius: 8, border: "none", cursor: isConverting ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onConvertToFrame} disabled={!selectedFile || isConverting}>{isConverting ? <><Spinner /> Converting...</> : "Convert to Frame ⏎"}</button></div>}<div style={{ fontSize: 11, marginTop: 10, opacity: 0.6 }}>Max 5MB • Cmd+V • Enter • Esc</div></div>}
+        {activeTab === "custom" && <div><input type="file" accept="image/png" onChange={(e) => onFileSelect(e.target.files?.[0] || null)} style={{ display: "none" }} id="file-input" disabled={isConverting} /><label htmlFor="file-input" style={{ display: "block", padding: "14px 16px", background: "#F5F5F5", color: "#333", borderRadius: 8, border: "2px dashed #CCC", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "center" }}>{selectedFile ? `✓ ${selectedFile.name}` : "📁 Choose or Drop PNG"}</label><div style={{ marginTop: 12, display: "flex", gap: 8 }}><label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><input type="checkbox" checked={useSmartCrop} onChange={(e) => setUseSmartCrop(e.target.checked)} /> Smart Crop</label><label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><input type="checkbox" checked={useRemoveBg} onChange={(e) => setUseRemoveBg(e.target.checked)} /> Remove BG</label></div>{previewUrl && <div style={{ marginTop: 12 }}><div style={{ position: "relative", width: "100%" }}><img src={previewUrl} alt="" style={{ width: "100%", maxHeight: 180, objectFit: "contain", borderRadius: 8, border: "2px solid #E5E5E5", background: "repeating-conic-gradient(#E5E5E5 0% 25%, white 0% 50%) 50% / 20px 20px" }} /><button onClick={clearFileSelection} style={{ position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: "50%", background: "rgba(0,0,0,0.7)", border: "2px solid white", color: "white", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>✕</button></div><button style={{ marginTop: 10, width: "100%", padding: "12px", background: isConverting ? "#999" : "linear-gradient(135deg, #667eea, #764ba2)", color: "white", borderRadius: 8, border: "none", cursor: isConverting ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onConvertToFrame} disabled={!selectedFile || isConverting}>{isConverting ? <><Spinner /> Converting...</> : "Convert to Frame ⏎"}</button></div>}</div>}
 
         {/* BATCH */}
-        {activeTab === "batch" && <div><input type="file" accept="image/png" multiple onChange={(e) => setBatchFiles(Array.from(e.target.files || []))} style={{ display: "none" }} id="batch-input" disabled={isConverting} /><label htmlFor="batch-input" style={{ display: "block", padding: "14px 16px", background: "#F5F5F5", color: "#333", borderRadius: 8, border: "2px dashed #CCC", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "center" }}>{batchFiles.length > 0 ? `✓ ${batchFiles.length} files` : "📂 Choose PNGs"}</label>{batchFiles.length > 0 && <div style={{ marginTop: 12 }}><div style={{ maxHeight: 150, overflowY: "auto", marginBottom: 10 }}>{batchFiles.map((f, i) => <div key={i} style={{ fontSize: 11, padding: "4px 0", color: "#666", display: "flex", justifyContent: "space-between" }}><span>{f.name}</span><span style={{ opacity: 0.5 }}>{(f.size / 1024).toFixed(0)}KB</span></div>)}</div>{batchProgress > 0 && <div style={{ height: 6, background: "#E5E5E5", borderRadius: 3, marginBottom: 10, overflow: "hidden" }}><div style={{ height: "100%", width: `${batchProgress}%`, background: "linear-gradient(90deg, #667eea, #764ba2)", borderRadius: 3, transition: "width 0.3s" }} /></div>}<div style={{ display: "flex", gap: 8 }}><button style={{ flex: 1, padding: "12px", background: "linear-gradient(135deg, #667eea, #764ba2)", color: "white", borderRadius: 8, border: "none", cursor: isConverting ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onBatchConvert} disabled={isConverting}>{isConverting ? <><Spinner /> Converting...</> : `Convert All (${batchFiles.length})`}</button><button style={{ padding: "12px 16px", background: "#F5F5F5", color: "#666", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 }} onClick={() => setBatchFiles([])}>Clear</button></div></div>}</div>}
+        {activeTab === "batch" && <div><input type="file" accept="image/png" multiple onChange={(e) => setBatchFiles(Array.from(e.target.files || []))} style={{ display: "none" }} id="batch-input" /><label htmlFor="batch-input" style={{ display: "block", padding: "14px 16px", background: "#F5F5F5", color: "#333", borderRadius: 8, border: "2px dashed #CCC", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "center" }}>{batchFiles.length > 0 ? `✓ ${batchFiles.length} files` : "📂 Choose PNGs"}</label>{batchFiles.length > 0 && <div style={{ marginTop: 12 }}>{batchProgress > 0 && <div style={{ height: 6, background: "#E5E5E5", borderRadius: 3, marginBottom: 10, overflow: "hidden" }}><div style={{ height: "100%", width: `${batchProgress}%`, background: "linear-gradient(90deg, #667eea, #764ba2)", borderRadius: 3, transition: "width 0.3s" }} /></div>}<div style={{ display: "flex", gap: 8 }}><button style={{ flex: 1, padding: "12px", background: "linear-gradient(135deg, #667eea, #764ba2)", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onBatchConvert} disabled={isConverting}>{isConverting ? <><Spinner /> Converting...</> : `Convert All (${batchFiles.length})`}</button><button style={{ padding: "12px 16px", background: "#F5F5F5", color: "#666", borderRadius: 8, border: "none", cursor: "pointer" }} onClick={() => setBatchFiles([])}>Clear</button></div></div>}</div>}
 
         {/* LIBRARY */}
         {activeTab === "library" && <div>{savedFrames.length === 0 ? <div style={{ textAlign: "center", padding: 30, color: "#999" }}><div style={{ fontSize: 32, marginBottom: 8 }}>📚</div><div style={{ fontSize: 13 }}>No saved frames</div></div> : <div><div style={{ fontSize: 11, marginBottom: 10, color: "#888" }}>{savedFrames.length} saved</div>{savedFrames.map((f) => <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#F9F9F9", borderRadius: 8, marginBottom: 6 }}><div><div style={{ fontSize: 13, fontWeight: 600 }}>{f.name}</div><div style={{ fontSize: 10, color: "#999" }}>{f.paths.length} paths</div></div><div style={{ display: "flex", gap: 6 }}><button onClick={() => onAddFromLibrary(f)} style={{ padding: "6px 12px", background: "#7D2AE8", color: "white", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>Add</button><button onClick={() => { deleteFrame(f.id); setSavedFrames(getSavedFrames()); }} style={{ padding: "6px 10px", background: "#FEE", color: "#C33", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>✕</button></div></div>)}</div>}</div>}
@@ -288,7 +279,7 @@ function App() {
         {/* SELECTION TAB */}
         {activeTab === "selection" && (
           <div>
-            <div style={{ display: "inline-block", padding: "3px 10px", background: "linear-gradient(135deg, #f093fb, #f5576c)", color: "white", borderRadius: 12, fontSize: 10, fontWeight: 700, marginBottom: 14, letterSpacing: 0.5 }}>✦ PRO</div>
+            <div style={{ display: "inline-block", padding: "3px 10px", background: "linear-gradient(135deg, #f093fb, #f5576c)", color: "white", borderRadius: 12, fontSize: 10, fontWeight: 700, marginBottom: 14 }}>✦ PRO</div>
 
             {/* Mode toggle */}
             <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
@@ -296,79 +287,83 @@ function App() {
               <button onClick={() => setSelectionMode("shape")} style={{ flex: 1, padding: "10px", background: selectionMode === "shape" ? "#667eea" : "#F5F5F5", color: selectionMode === "shape" ? "white" : "#333", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>🔷 Shape → Frame</button>
             </div>
 
+            {/* TEXT MODE */}
             {selectionMode === "text" && (
               <div>
-                {hasTextSelection && <div style={{ padding: "10px 12px", background: "#E8F5E9", border: "1px solid #A5D6A7", borderRadius: 8, marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 600, color: "#2E7D32", marginBottom: 4 }}>✅ Detected from canvas:</div><div style={{ fontSize: 14, fontWeight: 700, color: "#1B5E20" }}>"{selectedText}"</div></div>}
+                {hasTextSelection && <div style={{ padding: "10px 12px", background: "#E8F5E9", border: "1px solid #A5D6A7", borderRadius: 8, marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 600, color: "#2E7D32", marginBottom: 4 }}>✅ Detected:</div><div style={{ fontSize: 14, fontWeight: 700, color: "#1B5E20" }}>"{selectedText}"</div></div>}
 
                 <div style={{ fontSize: 12, marginBottom: 6, fontWeight: 600, color: "#555" }}>Text</div>
                 <input type="text" value={manualText} onChange={(e) => setManualText(e.target.value)} placeholder="Type here..." maxLength={50} style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: "2px solid #DDD", fontSize: 16, fontWeight: 700, outline: "none", boxSizing: "border-box" }} onFocus={(e) => (e.target.style.borderColor = "#667eea")} onBlur={(e) => (e.target.style.borderColor = "#DDD")} />
 
+                {/* Combined vs Individual */}
+                <div style={{ fontSize: 12, marginTop: 12, marginBottom: 6, fontWeight: 600, color: "#555" }}>Convert Mode</div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  <button onClick={() => setTextMode("combined")} style={{ flex: 1, padding: "10px", background: textMode === "combined" ? "#764ba2" : "#F5F5F5", color: textMode === "combined" ? "white" : "#333", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                    🔗 All as One Frame
+                  </button>
+                  <button onClick={() => setTextMode("individual")} style={{ flex: 1, padding: "10px", background: textMode === "individual" ? "#764ba2" : "#F5F5F5", color: textMode === "individual" ? "white" : "#333", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                    ✂️ Each Letter
+                  </button>
+                </div>
+
                 {/* Font picker */}
-                <div style={{ fontSize: 12, marginTop: 12, marginBottom: 6, fontWeight: 600, color: "#555" }}>Font Style</div>
+                <div style={{ fontSize: 12, marginBottom: 6, fontWeight: 600, color: "#555" }}>Font Style</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 }}>
                   {FONT_OPTIONS.map((f) => (
-                    <button key={f.id} onClick={() => setTextFontStyle(f.id)} style={{
-                      padding: "8px 10px", background: textFontStyle === f.id ? "#667eea" : "#F5F5F5",
-                      color: textFontStyle === f.id ? "white" : "#333", borderRadius: 6, border: "none",
-                      cursor: "pointer", fontSize: 12, fontWeight: textFontStyle === f.id ? 700 : 500,
-                      textAlign: "left",
-                    }}>
+                    <button key={f.id} onClick={() => setTextFontStyle(f.id)} style={{ padding: "8px 10px", background: textFontStyle === f.id ? "#667eea" : "#F5F5F5", color: textFontStyle === f.id ? "white" : "#333", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: textFontStyle === f.id ? 700 : 500, textAlign: "left" }}>
                       {f.name}
                     </button>
                   ))}
                 </div>
 
-                {/* Size slider */}
+                {/* Size */}
                 <div style={{ fontSize: 12, marginBottom: 4, fontWeight: 600, color: "#555", display: "flex", justifyContent: "space-between" }}><span>Size</span><span style={{ color: "#888" }}>{textFontSize}</span></div>
                 <input type="range" min={80} max={400} value={textFontSize} onChange={(e) => setTextFontSize(Number(e.target.value))} style={{ width: "100%" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#999" }}><span>Small</span><span>Large</span></div>
 
                 {/* Preview */}
-                {manualText.trim() && <div style={{ marginTop: 14, padding: "20px", background: "#F9F9F9", borderRadius: 8, textAlign: "center", border: "1px solid #E5E5E5" }}><div style={{ fontSize: Math.min(textFontSize / 5, 48), fontWeight: 700, color: "#333", wordBreak: "break-word" }}>{manualText}</div><div style={{ fontSize: 10, color: "#999", marginTop: 6 }}>Preview</div></div>}
+                {manualText.trim() && <div style={{ marginTop: 14, padding: "20px", background: "#F9F9F9", borderRadius: 8, textAlign: "center", border: "1px solid #E5E5E5" }}><div style={{ fontSize: Math.min(textFontSize / 5, 48), fontWeight: 700, color: "#333", wordBreak: "break-word" }}>{manualText}</div><div style={{ fontSize: 10, color: "#999", marginTop: 6 }}>{textMode === "individual" ? `${manualText.trim().replace(/\s/g, "").length} separate frames` : "1 combined frame"}</div></div>}
 
                 <button onClick={onConvertTextToFrame} disabled={!manualText.trim() || isConverting} style={{ marginTop: 14, width: "100%", padding: "14px", background: !manualText.trim() || isConverting ? "#999" : "linear-gradient(135deg, #f093fb, #f5576c)", color: "white", borderRadius: 10, border: "none", cursor: !manualText.trim() || isConverting ? "not-allowed" : "pointer", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: !manualText.trim() || isConverting ? "none" : "0 4px 15px rgba(240,147,251,0.4)" }}>
-                  {isConverting ? <><Spinner /> Converting...</> : "✦ Convert Text to Frame"}
+                  {isConverting ? <><Spinner /> Converting...</> : textMode === "individual" ? "✦ Convert Each Letter" : "✦ Convert to Frame"}
                 </button>
-                <div style={{ fontSize: 11, marginTop: 10, opacity: 0.5, textAlign: "center" }}>Best with bold, short text (1-3 words)</div>
               </div>
             )}
 
+            {/* SHAPE MODE */}
             {selectionMode === "shape" && (
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, color: "#333" }}>Shape → Frame</div>
                 <div style={{ fontSize: 12, color: "#666", marginBottom: 16, lineHeight: 1.6 }}>
-                  Draw or place a <strong>shape</strong> on your canvas, then export it to convert into a frame.
+                  Upload a <strong>screenshot or PNG</strong> of your shape to convert it into a frame.
                 </div>
 
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "flex-start" }}>
-                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: "#667eea", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>1</div>
-                    <div style={{ fontSize: 12, color: "#555" }}>Add a shape or draw something on your canvas</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "flex-start" }}>
-                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: "#764ba2", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>2</div>
-                    <div style={{ fontSize: 12, color: "#555" }}>Click the button below — it will ask you to export</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: "#f093fb", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>3</div>
-                    <div style={{ fontSize: 12, color: "#555" }}>Export as PNG → auto-converts to frame!</div>
-                  </div>
-                </div>
+                <input type="file" accept="image/png,image/jpeg" onChange={(e) => onShapeFileSelect(e.target.files?.[0] || null)} style={{ display: "none" }} id="shape-input" disabled={isConverting} />
+                <label htmlFor="shape-input" style={{ display: "block", padding: "14px 16px", background: "#F5F5F5", color: "#333", borderRadius: 8, border: "2px dashed #CCC", cursor: "pointer", fontSize: 13, fontWeight: 600, textAlign: "center" }}>
+                  {shapeFile ? `✓ ${shapeFile.name}` : "📂 Upload Shape PNG"}
+                </label>
 
-                <button onClick={onConvertShapeToFrame} disabled={isConverting} style={{
-                  width: "100%", padding: "14px",
-                  background: isConverting ? "#999" : "linear-gradient(135deg, #f093fb, #f5576c)",
+                {shapePreview && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ position: "relative", width: "100%" }}>
+                      <img src={shapePreview} alt="" style={{ width: "100%", maxHeight: 180, objectFit: "contain", borderRadius: 8, border: "2px solid #E5E5E5", background: "repeating-conic-gradient(#E5E5E5 0% 25%, white 0% 50%) 50% / 20px 20px" }} />
+                      <button onClick={() => { setShapeFile(null); setShapePreview(""); }} style={{ position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: "50%", background: "rgba(0,0,0,0.7)", border: "2px solid white", color: "white", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>✕</button>
+                    </div>
+                  </div>
+                )}
+
+                <button onClick={onConvertShapeToFrame} disabled={!shapeFile || isConverting} style={{
+                  marginTop: 14, width: "100%", padding: "14px",
+                  background: !shapeFile || isConverting ? "#999" : "linear-gradient(135deg, #f093fb, #f5576c)",
                   color: "white", borderRadius: 10, border: "none",
-                  cursor: isConverting ? "not-allowed" : "pointer",
-                  fontSize: 15, fontWeight: 700,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  boxShadow: isConverting ? "none" : "0 4px 15px rgba(240,147,251,0.4)",
+                  cursor: !shapeFile || isConverting ? "not-allowed" : "pointer",
+                  fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
+                  boxShadow: !shapeFile || isConverting ? "none" : "0 4px 15px rgba(240,147,251,0.4)",
                 }}>
-                  {isConverting ? <><Spinner /> Converting...</> : "✦ Export & Convert Shape"}
+                  {isConverting ? <><Spinner /> Converting...</> : "✦ Convert Shape to Frame"}
                 </button>
 
                 <div style={{ fontSize: 11, marginTop: 12, opacity: 0.5, textAlign: "center" }}>
-                  Uses Canva export → best with bold, high-contrast shapes
+                  Tip: Take screenshot of your shape, upload here
                 </div>
               </div>
             )}

@@ -7,6 +7,13 @@ RUN apt-get update && apt-get install -y \
     libpango1.0-dev \
     libgif-dev \
     librsvg2-dev \
+    fonts-liberation \
+    fonts-dejavu-core \
+    fonts-freefont-ttf \
+    fonts-noto-core \
+    fonts-urw-base35 \
+    fontconfig \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -27,18 +27,38 @@ function traceSvg(buffer, opts = {}) {
   });
 }
 
-// FIXED: Extract ALL path data as single compound paths (preserves holes like O, D, etc.)
-function extractCompoundPaths(svg, limit = 200) {
+function splitToSingleMovePaths(d) {
+  const parts = [];
+  let current = "";
+  for (let i = 0; i < d.length; i++) {
+    const char = d[i];
+    if ((char === "M" || char === "m") && current.trim().length > 0) {
+      parts.push(current.trim());
+      current = "";
+    }
+    current += char;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts
+    .filter((p) => p.length > 3)
+    .map((p) => {
+      const t = p.trim();
+      if (!t.endsWith("Z") && !t.endsWith("z")) return t + " Z";
+      return t;
+    });
+}
+
+function extractPaths(svg, limit = 300) {
   const viewBox = extractViewBox(svg);
   const paths = [];
   const matches = svg.matchAll(/<path[^>]*d="([^"]+)"/g);
   for (const m of matches) {
-    // Keep entire path data as ONE compound path — this preserves holes
-    const d = m[1].trim();
-    if (d) {
-      paths.push(d);
+    const subPaths = splitToSingleMovePaths(m[1].trim());
+    for (const sp of subPaths) {
+      paths.push(sp);
       if (paths.length >= limit) break;
     }
+    if (paths.length >= limit) break;
   }
   return { paths, viewBox };
 }
@@ -52,10 +72,9 @@ async function processImage(buffer, opts = {}) {
     .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
     .grayscale().normalise().threshold(opts.threshold || 160).png().toBuffer();
   const svg = await traceSvg(pre, opts);
-  return extractCompoundPaths(svg);
+  return extractPaths(svg);
 }
 
-// Vectorize
 app.post("/vectorize", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -65,7 +84,6 @@ app.post("/vectorize", upload.single("file"), async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// Batch
 app.post("/vectorize-batch", upload.array("files", 20), async (req, res) => {
   try {
     if (!req.files || !req.files.length) return res.status(400).json({ error: "No files" });
@@ -78,7 +96,6 @@ app.post("/vectorize-batch", upload.array("files", 20), async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// Smart crop
 app.post("/smart-crop", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -89,7 +106,6 @@ app.post("/smart-crop", upload.single("file"), async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// Remove BG
 app.post("/remove-bg", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -101,91 +117,105 @@ app.post("/remove-bg", upload.single("file"), async (req, res) => {
       processed = await sharp(req.file.buffer).grayscale().normalise().threshold(200).negate().png().toBuffer();
     }
     const svg = await traceSvg(processed, { threshold: 128, turdSize: 15 });
-    const result = extractCompoundPaths(svg);
+    const result = extractPaths(svg);
     if (!result.paths.length) return res.status(500).json({ error: "No path found" });
     res.json(result);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// FONTS available for text-to-frame
+// Real distinct fonts using system fonts
 const FONTS = {
-  "arial": { family: "Arial, Helvetica, sans-serif", weight: "bold" },
-  "serif": { family: "Georgia, 'Times New Roman', serif", weight: "bold" },
-  "mono": { family: "'Courier New', Courier, monospace", weight: "bold" },
-  "impact": { family: "Impact, 'Arial Black', sans-serif", weight: "normal" },
-  "cursive": { family: "'Comic Sans MS', cursive, sans-serif", weight: "bold" },
-  "rounded": { family: "Verdana, Geneva, sans-serif", weight: "bold" },
-  "thin": { family: "Arial, Helvetica, sans-serif", weight: "100" },
-  "light": { family: "'Trebuchet MS', Helvetica, sans-serif", weight: "300" },
-  "black": { family: "'Arial Black', Gadget, sans-serif", weight: "900" },
-  "condensed": { family: "'Arial Narrow', Arial, sans-serif", weight: "bold" },
+  "sans-bold":    { family: "Liberation Sans, DejaVu Sans, FreeSans, sans-serif", weight: "bold" },
+  "serif-bold":   { family: "Liberation Serif, DejaVu Serif, FreeSerif, serif", weight: "bold" },
+  "mono-bold":    { family: "Liberation Mono, DejaVu Sans Mono, FreeMono, monospace", weight: "bold" },
+  "sans-black":   { family: "Liberation Sans, DejaVu Sans, sans-serif", weight: "900" },
+  "sans-thin":    { family: "Liberation Sans, DejaVu Sans, sans-serif", weight: "100" },
+  "sans-light":   { family: "Liberation Sans, DejaVu Sans, sans-serif", weight: "300" },
+  "serif-normal": { family: "Liberation Serif, DejaVu Serif, serif", weight: "normal" },
+  "mono-normal":  { family: "Liberation Mono, DejaVu Sans Mono, monospace", weight: "normal" },
+  "noto-bold":    { family: "Noto Sans, DejaVu Sans, sans-serif", weight: "bold" },
+  "noto-black":   { family: "Noto Sans, DejaVu Sans, sans-serif", weight: "900" },
 };
 
-// TEXT TO FRAME with multiple fonts
+async function renderTextToPng(text, fontSize, fontKey) {
+  const font = FONTS[fontKey] || FONTS["sans-bold"];
+  const escaped = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const canvasW = 2000, canvasH = 1000;
+  const textSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">
+    <rect width="${canvasW}" height="${canvasH}" fill="white"/>
+    <text x="${canvasW / 2}" y="${canvasH / 2 + fontSize * 0.1}" text-anchor="middle" dominant-baseline="middle"
+      font-family="${font.family}" font-size="${fontSize}" font-weight="${font.weight}"
+      fill="black">${escaped}</text>
+  </svg>`;
+
+  const pngBuffer = await sharp(Buffer.from(textSvg)).png().toBuffer();
+  const trimmed = await sharp(pngBuffer).trim({ threshold: 20 }).toBuffer();
+  return trimmed;
+}
+
+// Combined: all text as ONE frame
 app.post("/text-to-frame", async (req, res) => {
   try {
-    const { text, fontSize, fontStyle } = req.body;
+    const { text, fontSize, fontStyle, mode } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ error: "No text provided" });
 
-    const size = fontSize || 200;
+    const size = fontSize || 250;
     const cleanText = text.trim().substring(0, 50);
-    const font = FONTS[fontStyle] || FONTS["arial"];
+    const isIndividual = mode === "individual";
 
-    // Escape HTML entities
-    const escaped = cleanText
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    if (isIndividual) {
+      // Individual: each letter becomes separate frame
+      const letters = cleanText.split("").filter(c => c.trim());
+      const results = [];
 
-    // Create SVG with text — larger canvas for better quality
-    const canvasW = 1600;
-    const canvasH = 800;
-    const textSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">
-      <rect width="${canvasW}" height="${canvasH}" fill="white"/>
-      <text x="${canvasW / 2}" y="${canvasH / 2 + size * 0.1}" text-anchor="middle" dominant-baseline="middle"
-        font-family="${font.family}"
-        font-size="${size}"
-        font-weight="${font.weight}"
-        fill="black">${escaped}</text>
-    </svg>`;
+      for (const letter of letters) {
+        try {
+          const trimmed = await renderTextToPng(letter, size, fontStyle);
+          const processed = await sharp(trimmed)
+            .ensureAlpha().flatten({ background: { r: 255, g: 255, b: 255 } })
+            .grayscale().normalise().threshold(128).png().toBuffer();
+          const svg = await traceSvg(processed, { threshold: 128, turdSize: 2 });
+          const result = extractPaths(svg);
+          results.push({ letter, ...result });
+        } catch (e) {
+          results.push({ letter, paths: [], error: String(e) });
+        }
+      }
 
-    // Render SVG to PNG at high quality
-    const pngBuffer = await sharp(Buffer.from(textSvg))
-      .png()
-      .toBuffer();
+      res.json({ mode: "individual", results });
+    } else {
+      // Combined: entire text as ONE frame
+      const trimmed = await renderTextToPng(cleanText, size, fontStyle);
+      const processed = await sharp(trimmed)
+        .ensureAlpha().flatten({ background: { r: 255, g: 255, b: 255 } })
+        .grayscale().normalise().threshold(128).png().toBuffer();
+      const svg = await traceSvg(processed, { threshold: 128, turdSize: 2 });
+      const result = extractPaths(svg);
 
-    // Trim whitespace tightly
-    const trimmed = await sharp(pngBuffer)
-      .trim({ threshold: 20 })
-      .toBuffer();
-
-    // Process — lower turdSize for text detail, keep compound paths for holes
-    const svg = await traceSvg(
-      await sharp(trimmed)
-        .ensureAlpha()
-        .flatten({ background: { r: 255, g: 255, b: 255 } })
-        .grayscale()
-        .normalise()
-        .threshold(128)
-        .png()
-        .toBuffer(),
-      { threshold: 128, turdSize: 2 }
-    );
-
-    const result = extractCompoundPaths(svg);
-    if (!result.paths.length) return res.status(500).json({ error: "Could not convert text" });
-
-    res.json({ ...result, fontUsed: fontStyle || "arial" });
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
-  }
+      if (!result.paths.length) return res.status(500).json({ error: "Could not convert text" });
+      res.json({ mode: "combined", ...result });
+    }
+  } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// GET available fonts
-app.get("/fonts", (_req, res) => {
-  res.json({ fonts: Object.keys(FONTS) });
+// Shape upload endpoint (user uploads PNG instead of export)
+app.post("/shape-to-frame", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    
+    // Trim whitespace, then process
+    const trimmed = await sharp(req.file.buffer).trim({ threshold: 20 }).toBuffer();
+    const result = await processImage(trimmed, { threshold: 140, turdSize: 5 });
+    
+    if (!result.paths.length) return res.status(500).json({ error: "No paths found" });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
 });
+
+app.get("/fonts", (_req, res) => res.json({ fonts: Object.keys(FONTS) }));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("Vectorize server running on", port));
